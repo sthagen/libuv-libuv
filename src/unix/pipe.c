@@ -447,13 +447,18 @@ uv_handle_type uv_pipe_pending_type(uv_pipe_t* handle) {
 
 
 int uv_pipe_chmod(uv_pipe_t* handle, int mode) {
-  unsigned desired_mode;
-  struct stat pipe_stat;
   char name_buffer[1 + UV__PATH_MAX];
+  int desired_mode;
   size_t name_len;
+  const char* name;
+  int fd;
   int r;
 
-  if (handle == NULL || uv__stream_fd(handle) == -1)
+  if (handle == NULL)
+    return UV_EBADF;
+
+  fd = uv__stream_fd(handle);
+  if (fd == -1)
     return UV_EBADF;
 
   if (mode != UV_READABLE &&
@@ -461,31 +466,32 @@ int uv_pipe_chmod(uv_pipe_t* handle, int mode) {
       mode != (UV_WRITABLE | UV_READABLE))
     return UV_EINVAL;
 
-  /* Unfortunately fchmod does not work on all platforms, we will use chmod. */
-  name_len = sizeof(name_buffer);
-  r = uv_pipe_getsockname(handle, name_buffer, &name_len);
-  if (r != 0)
-    return r;
-
-  /* stat must be used as fstat has a bug on Darwin */
-  if (uv__stat(name_buffer, &pipe_stat) == -1)
-    return UV__ERR(errno);
-
   desired_mode = 0;
   if (mode & UV_READABLE)
     desired_mode |= S_IRUSR | S_IRGRP | S_IROTH;
   if (mode & UV_WRITABLE)
     desired_mode |= S_IWUSR | S_IWGRP | S_IWOTH;
 
-  /* Exit early if pipe already has desired mode. */
-  if ((pipe_stat.st_mode & desired_mode) == desired_mode)
-    return 0;
+  /* fchmod on macOS and (Free|Net|Open)BSD does not support UNIX sockets. */
+  if (fchmod(fd, desired_mode))
+    if (errno != EINVAL && errno != EOPNOTSUPP)
+      return UV__ERR(errno);
 
-  pipe_stat.st_mode |= desired_mode;
+  /* Fall back to chmod. */
+  name_len = sizeof(name_buffer);
+  r = uv_pipe_getsockname(handle, name_buffer, &name_len);
+  if (r != 0)
+    return r;
+  name = name_buffer;
 
-  r = chmod(name_buffer, pipe_stat.st_mode);
+  /* On some platforms, getsockname returns an empty string, and we try with pipe_fname. */
+  if (name_len == 0 && handle->pipe_fname != NULL)
+    name = handle->pipe_fname;
 
-  return r != -1 ? 0 : UV__ERR(errno);
+  if (chmod(name, desired_mode))
+    return UV__ERR(errno);
+
+  return 0;
 }
 
 
