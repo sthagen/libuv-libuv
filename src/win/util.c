@@ -513,8 +513,8 @@ int uv_uptime(double* uptime) {
 unsigned int uv_available_parallelism(void) {
   DWORD_PTR procmask;
   DWORD_PTR sysmask;
-  int count;
-  int i;
+  unsigned count;
+  unsigned i;
 
   /* TODO(bnoordhuis) Use GetLogicalProcessorInformationEx() to support systems
    * with > 64 CPUs? See https://github.com/libuv/libuv/pull/3458
@@ -1712,6 +1712,9 @@ int uv_os_uname(uv_utsname_t* buffer) {
     case PROCESSOR_ARCHITECTURE_ARM:
       uv__strscpy(buffer->machine, "arm", sizeof(buffer->machine));
       break;
+    case PROCESSOR_ARCHITECTURE_ARM64:
+      uv__strscpy(buffer->machine, "arm64", sizeof(buffer->machine));
+      break;
     default:
       uv__strscpy(buffer->machine, "unknown", sizeof(buffer->machine));
       break;
@@ -1744,8 +1747,11 @@ int uv_gettimeofday(uv_timeval64_t* tv) {
   return 0;
 }
 
-int uv__random_rtlgenrandom(void* buf, size_t buflen) {
+int uv__random_winrandom(void* buf, size_t buflen) {
   if (buflen == 0)
+    return 0;
+
+  if (pProcessPrng != NULL && pProcessPrng(buf, buflen))
     return 0;
 
   if (SystemFunction036(buf, buflen) == FALSE)
