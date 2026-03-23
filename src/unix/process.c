@@ -145,6 +145,7 @@ void uv__wait_children(uv_loop_t* loop) {
     }
 
     assert(pid == process->pid);
+    process->flags |= UV_HANDLE_ESRCH; /* pid is no longer valid (or unique) */
     process->status = status;
     uv__queue_remove(&process->queue);
     uv__queue_insert_tail(&pending, &process->queue);
@@ -291,6 +292,7 @@ static void uv__process_child_init(const uv_process_options_t* options,
   sigset_t signewset;
   int close_fd;
   int use_fd;
+  int err;
   int fd;
   int n;
 
@@ -333,9 +335,9 @@ static void uv__process_child_init(const uv_process_options_t* options,
     if (pipes[fd][1] == -1)
       uv__write_errno(error_fd);
 #ifndef F_DUPFD_CLOEXEC /* POSIX 2008 */
-    n = uv__cloexec(pipes[fd][1], 1);
-    if (n)
-      uv__write_int(error_fd, n);
+    err = uv__cloexec(pipes[fd][1], 1);
+    if (err)
+      uv__write_int(error_fd, err);
 #endif
   }
 
@@ -360,9 +362,9 @@ static void uv__process_child_init(const uv_process_options_t* options,
 
     if (fd == use_fd) {
       if (close_fd == -1) {
-        n = uv__cloexec(use_fd, 0);
-        if (n)
-          uv__write_int(error_fd, n);
+        err = uv__cloexec(use_fd, 0);
+        if (err)
+          uv__write_int(error_fd, err);
       }
     }
     else {
@@ -372,8 +374,11 @@ static void uv__process_child_init(const uv_process_options_t* options,
     if (fd == -1)
       uv__write_errno(error_fd);
 
-    if (fd <= 2 && close_fd == -1)
-      uv__nonblock_fcntl(fd, 0);
+    if (fd <= 2 && close_fd == -1) {
+      err = uv__nonblock_fcntl(fd, 0);
+      if (err)
+        uv__write_int(error_fd, err);
+    }
 
     if (close_fd >= stdio_count)
       uv__close(close_fd);
@@ -968,6 +973,10 @@ int uv_spawn(uv_loop_t* loop,
              const uv_process_options_t* options) {
 #if defined(__APPLE__) && (TARGET_OS_TV || TARGET_OS_WATCH)
   /* fork is marked __WATCHOS_PROHIBITED __TVOS_PROHIBITED. */
+  uv__handle_init(loop, (uv_handle_t*)process, UV_PROCESS);
+  QUEUE_INIT(&process->queue);
+  process->status = 0;
+  process->pid = 0;
   return UV_ENOSYS;
 #else
   int pipes_storage[8][2];
@@ -991,6 +1000,7 @@ int uv_spawn(uv_loop_t* loop,
   uv__handle_init(loop, (uv_handle_t*)process, UV_PROCESS);
   uv__queue_init(&process->queue);
   process->status = 0;
+  process->pid = 0;
 
   stdio_count = options->stdio_count;
   if (stdio_count < 3)
@@ -1095,6 +1105,8 @@ error:
 
 
 int uv_process_kill(uv_process_t* process, int signum) {
+  if (process->flags & UV_HANDLE_ESRCH)
+    return UV_ESRCH;
   return uv_kill(process->pid, signum);
 }
 
@@ -1115,6 +1127,9 @@ int uv_kill(int pid, int signum) {
 
 
 void uv__process_close(uv_process_t* handle) {
+  /* Warning: if UV_HANDLE_ESRCH is not set, the caller is creating a zombie
+   * that we cannot reap. We assume here that it is intentional, and that the
+   * user will be wise and cleanup later. */
   uv__queue_remove(&handle->queue);
   uv__handle_stop(handle);
 #ifdef UV_USE_SIGCHLD
