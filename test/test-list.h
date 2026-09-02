@@ -112,6 +112,7 @@ TEST_DECLARE   (tcp_write_fail)
 TEST_DECLARE   (tcp_try_write)
 TEST_DECLARE   (tcp_write_in_a_row)
 TEST_DECLARE   (tcp_try_write_error)
+TEST_DECLARE   (tcp_write_in_read_cb_backend_timeout)
 TEST_DECLARE   (tcp_write_queue_order)
 TEST_DECLARE   (tcp_write_cancel)
 TEST_DECLARE   (pipe_write_cancel)
@@ -346,6 +347,7 @@ TEST_DECLARE   (spawn_empty_env)
 TEST_DECLARE   (spawn_exit_code)
 TEST_DECLARE   (spawn_stdout)
 TEST_DECLARE   (spawn_stdin)
+TEST_DECLARE   (spawn_stdio_socket_buffer_size)
 TEST_DECLARE   (spawn_stdio_greater_than_3)
 TEST_DECLARE   (spawn_ignored_stdio)
 TEST_DECLARE   (spawn_and_kill)
@@ -496,6 +498,7 @@ TEST_DECLARE   (threadpool_cancel_getnameinfo)
 TEST_DECLARE   (threadpool_cancel_random)
 TEST_DECLARE   (threadpool_cancel_work)
 TEST_FS_DECLARE   (threadpool_cancel_fs)
+TEST_DECLARE   (threadpool_cancel_fs_iouring_sync_cancel)
 TEST_DECLARE   (threadpool_cancel_single)
 TEST_DECLARE   (threadpool_cancel_when_busy)
 TEST_DECLARE   (thread_detach)
@@ -566,6 +569,7 @@ TEST_DECLARE   (signal_pending_on_close)
 TEST_DECLARE   (signal_close_loop_alive)
 #endif
 #ifdef __APPLE__
+TEST_DECLARE   (osx_resident_set_memory)
 TEST_DECLARE   (osx_select)
 TEST_DECLARE   (osx_select_many_fds)
 #endif
@@ -752,6 +756,7 @@ TASK_LIST_START
   TEST_ENTRY  (tcp_write_in_a_row)
   TEST_ENTRY  (tcp_try_write_error)
 
+  TEST_ENTRY  (tcp_write_in_read_cb_backend_timeout)
   TEST_ENTRY  (tcp_write_queue_order)
   TEST_ENTRY  (tcp_write_cancel)
   TEST_ENTRY  (pipe_write_cancel)
@@ -1059,6 +1064,9 @@ TASK_LIST_START
   TEST_ENTRY  (spawn_exit_code)
   TEST_ENTRY  (spawn_stdout)
   TEST_ENTRY  (spawn_stdin)
+#ifndef _WIN32
+  TEST_ENTRY  (spawn_stdio_socket_buffer_size)
+#endif
   TEST_ENTRY  (spawn_stdio_greater_than_3)
   TEST_ENTRY  (spawn_ignored_stdio)
   TEST_ENTRY  (spawn_and_kill)
@@ -1124,6 +1132,7 @@ TASK_LIST_START
 #endif
 
 #ifdef __APPLE__
+  TEST_ENTRY (osx_resident_set_memory)
   TEST_ENTRY (osx_select)
   TEST_ENTRY (osx_select_many_fds)
 #endif
@@ -1248,6 +1257,7 @@ TASK_LIST_START
   TEST_ENTRY  (threadpool_cancel_random)
   TEST_ENTRY  (threadpool_cancel_work)
   TEST_FS_ENTRY  (threadpool_cancel_fs)
+  TEST_ENTRY  (threadpool_cancel_fs_iouring_sync_cancel)
   TEST_ENTRY  (threadpool_cancel_single)
   TEST_ENTRY  (threadpool_cancel_when_busy)
   TEST_ENTRY  (thread_detach)

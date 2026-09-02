@@ -596,6 +596,7 @@ if(LIBUV_BUILD_TESTS)
        test/test-mutexes.c
        test/test-not-readable-nor-writable-on-read-error.c
        test/test-not-writable-after-shutdown.c
+       test/test-osx-resident-set-memory.c
        test/test-osx-select.c
        test/test-pass-always.c
        test/test-ping-pong.c
@@ -670,6 +671,7 @@ if(LIBUV_BUILD_TESTS)
        test/test-tcp-write-after-connect.c
        test/test-tcp-write-fail.c
        test/test-write-cancel.c
+       test/test-tcp-write-in-read-cb-backend-timeout.c
        test/test-tcp-write-queue-order.c
        test/test-tcp-write-to-half-open-connection.c
        test/test-tcp-writealot.c
