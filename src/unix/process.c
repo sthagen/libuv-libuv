@@ -37,6 +37,10 @@
 #include <paths.h>
 #include <dlfcn.h>
 
+#if defined(__GLIBC__) && !defined(__UCLIBC__)
+#include <gnu/libc-version.h>  /* gnu_get_libc_version() */
+#endif
+
 #if defined(__PASE__)
 #define _PATH_DEFPATH "/QOpenSys/pkgs/bin:/QOpenSys/usr/bin:/usr/bin"
 #elif defined(_AIX)
@@ -496,6 +500,17 @@ static void uv__spawn_init_posix_spawn(void) {
 #elif !defined(__ANDROID__)
   pid_t pid;
   int status;
+#if defined(__GLIBC__) && !defined(__UCLIBC__)
+  const char* version;
+
+  /* Before glibc 2.24, posix_spawn() does not report exec() failures (it
+   * returns 0 and the child exits with status 127), and it also exits the
+   * child with status 127 if any signal in the sigdefault set can't be reset,
+   * such as SIGKILL. Use fork() there instead. */
+  version = gnu_get_libc_version();
+  if (version[0] == '2' && version[1] == '.' && atoi(version + 2) < 24)
+    return;
+#endif
 
   /* Probe whether vfork()/clone(CLONE_VM) correctly shares the address space,
    * i.e. a write by the child before _exit() is visible to the parent once it
@@ -610,11 +625,14 @@ static int uv__spawn_set_posix_spawn_file_actions(
     const uv_process_options_t* options,
     int stdio_count,
     int (*pipes)[2]) {
+  int child_fds_storage[8];
+  int* child_fds;
   int fd;
   int fd2;
   int use_fd;
   int err;
 
+  child_fds = child_fds_storage;
   err = posix_spawn_file_actions_init(actions);
   if (err != 0) {
     /* If initialization fails, no need to de-init, just return */
@@ -633,14 +651,25 @@ static int uv__spawn_set_posix_spawn_file_actions(
       goto error;
   }
 
-  /* Do not return ENOSYS after this point, as we may mutate pipes. */
+  if (stdio_count > (int) ARRAY_SIZE(child_fds_storage)) {
+    child_fds = uv__malloc(stdio_count * sizeof(*child_fds));
+    if (child_fds == NULL) {
+      err = ENOMEM;
+      goto error;
+    }
+  }
+
+  /* File actions only remap descriptors in the child. Keep the parent's
+   * descriptors intact for stream setup and cleanup. */
+  for (fd = 0; fd < stdio_count; fd++)
+    child_fds[fd] = pipes[fd][1];
 
   /* First duplicate low numbered fds, since it's not safe to duplicate them,
    * they could get replaced. Example: swapping stdout and stderr; without
    * this fd 2 (stderr) would be duplicated into fd 1, thus making both
    * stdout and stderr go to the same fd, which was not the intention. */
   for (fd = 0; fd < stdio_count; fd++) {
-    use_fd = pipes[fd][1];
+    use_fd = child_fds[fd];
 #if defined(__APPLE__) || defined(__linux__)
     if (use_fd < 0 || use_fd >= fd)
       continue;
@@ -656,24 +685,24 @@ static int uv__spawn_set_posix_spawn_file_actions(
       /* If we were not setting POSIX_SPAWN_CLOEXEC_DEFAULT, we would need to
        * also consider whether fcntl(fd, F_GETFD) returned without the
        * FD_CLOEXEC flag set. */
-      if (pipes[fd2][1] == use_fd) {
+      if (child_fds[fd2] == use_fd) {
         use_fd++;
         fd2 = 0;
       }
     }
     err = posix_spawn_file_actions_adddup2(
       actions,
-      pipes[fd][1],
+      child_fds[fd],
       use_fd);
     assert(err != ENOSYS);
     if (err != 0)
       goto error;
-    pipes[fd][1] = use_fd;
+    child_fds[fd] = use_fd;
   }
 
   /* Second, move the descriptors into their respective places */
   for (fd = 0; fd < stdio_count; fd++) {
-    use_fd = pipes[fd][1];
+    use_fd = child_fds[fd];
     if (use_fd < 0) {
       if (fd >= 3)
         continue;
@@ -702,20 +731,21 @@ static int uv__spawn_set_posix_spawn_file_actions(
     if (err != 0)
       goto error;
 
-    /* Make sure the fd is marked as non-blocking (state shared between child
-     * and parent). */
-    uv__nonblock_fcntl(use_fd, 0);
+    /* Make sure standard descriptors are blocking (state shared between
+     * child and parent). Leave other inherited descriptors unchanged. */
+    if (fd <= 2)
+      uv__nonblock_fcntl(pipes[fd][1], 0);
   }
 
   /* Finally, close all the superfluous descriptors */
   for (fd = 0; fd < stdio_count; fd++) {
-    use_fd = pipes[fd][1];
+    use_fd = child_fds[fd];
     if (use_fd < stdio_count)
       continue;
 
     /* Check if we already closed this. */
     for (fd2 = 0; fd2 < fd; fd2++) {
-      if (pipes[fd2][1] == use_fd)
+      if (child_fds[fd2] == use_fd)
           break;
     }
     if (fd2 < fd)
@@ -727,9 +757,13 @@ static int uv__spawn_set_posix_spawn_file_actions(
       goto error;
   }
 
+  if (child_fds != child_fds_storage)
+    uv__free(child_fds);
   return 0;
 
 error:
+  if (child_fds != child_fds_storage)
+    uv__free(child_fds);
   (void) posix_spawn_file_actions_destroy(actions);
   return err;
 }
@@ -854,6 +888,10 @@ static int uv__spawn_and_init_child_posix_spawn(
   int err;
   posix_spawnattr_t attrs;
   posix_spawn_file_actions_t actions;
+#if defined(__CYGWIN__)
+  sigset_t chld_set;
+  sigset_t chld_old;
+#endif
 
   if (!posix_spawn_works)
     return UV_ENOSYS;
@@ -862,7 +900,6 @@ static int uv__spawn_and_init_child_posix_spawn(
   if (err != 0)
     goto error;
 
-  /* This may mutate pipes. */
   err = uv__spawn_set_posix_spawn_file_actions(&actions,
                                                options,
                                                stdio_count,
@@ -878,10 +915,26 @@ static int uv__spawn_and_init_child_posix_spawn(
   uv_rwlock_wrlock(&loop->cloexec_lock);
 #endif
 
+#if defined(__CYGWIN__)
+  /* Cygwin implements posix_spawn as fork plus a semaphore wait, and the
+   * child then overlays a native image. The fork path already blocks signals
+   * across fork. Do the same here so the SIGCHLD handler does not run inside
+   * that call. posix_spawn installs an empty mask on the child. */
+  sigemptyset(&chld_set);
+  sigaddset(&chld_set, SIGCHLD);
+  if (pthread_sigmask(SIG_BLOCK, &chld_set, &chld_old) != 0)
+    abort();
+#endif
+
   /* Try to spawn options->file resolving in the provided environment
    * if any. */
   err = uv__spawn_resolve_and_spawn(options, &attrs, &actions, pid);
   assert(err != ENOSYS);
+
+#if defined(__CYGWIN__)
+  if (pthread_sigmask(SIG_SETMASK, &chld_old, NULL) != 0)
+    abort();
+#endif
 
 #ifndef __APPLE__
   /* Release lock in parent process. */
